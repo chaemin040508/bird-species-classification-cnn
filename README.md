@@ -65,4 +65,4 @@ Submit the following four items:
 ## GitHub Link
 Replace this placeholder with the final repository URL:
 
-`https://github.com/<team>/<repository>`
+`https://github.com/chaemin040508/bird-species-classification-cnn`
