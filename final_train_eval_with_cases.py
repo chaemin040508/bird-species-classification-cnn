@@ -20,9 +20,8 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import Subset
 from sklearn.metrics import confusion_matrix, classification_report
 
-# ==============================================================================
 # 0. 랜덤 시드 고정
-# ==============================================================================
+
 seed = 42
 random.seed(seed)
 np.random.seed(seed)
@@ -33,9 +32,8 @@ if torch.cuda.is_available():
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-# ==============================================================================
-# 1. CUB-200-2011 전용 커스텀 데이터셋 (BBox 및 Split 적용)
-# ==============================================================================
+# 1. CUB-200-2011 
+
 class CUBDataset(Dataset):
     def __init__(self, root_dir, split='train', transform=None):
         self.root_dir = root_dir
@@ -98,21 +96,16 @@ class CUBDataset(Dataset):
             
         return image, item['label']
 
+# 2.  EfficientNet V2 
 
-# ==============================================================================
-# 2. 🌟 EfficientNet V2 모델 구조 
-# ==============================================================================
 class CustomEfficientNetV2(nn.Module):
     def __init__(self, num_classes: int = 200, dropout_rate: float = 0.5):
         super().__init__()
-        # EfficientNet V2 Small 모델 불러오기
+
         self.backbone = models.efficientnet_v2_s(weights=models.EfficientNet_V2_S_Weights.DEFAULT)
-        
-        # EfficientNet은 마지막 분류기가 'classifier'라는 이름의 Sequential로 되어 있음
-        # 보통 [0]이 Dropout, [1]이 Linear 층이므로 [1]의 in_features를 가져옴
+
         in_features = self.backbone.classifier[1].in_features
 
-        # 새로운 분류기 층 덮어쓰기
         self.backbone.classifier = nn.Sequential(
             nn.Dropout(p=dropout_rate),            
             nn.Linear(in_features, num_classes)    
@@ -121,10 +114,8 @@ class CustomEfficientNetV2(nn.Module):
     def forward(self, x):
         return self.backbone(x)
 
-
-# ==============================================================================
 # 3. Main
-# ==============================================================================
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=32)
@@ -179,7 +170,6 @@ def main():
 
     print(f"Dataset Size - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(final_test_dataset)}")
 
-    # Model & Optimizer & Scheduler 적용
     model = CustomEfficientNetV2(num_classes=200).to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
@@ -190,16 +180,14 @@ def main():
 
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=0.00001)
 
-    # ==========================================================================
     # Training Loop
-    # ==========================================================================
+
     history_train_loss, history_val_loss = [], []
     history_train_acc, history_val_acc = [], []
 
     print("Training Start")
 
     for epoch in range(1, args.epochs + 1):
-        # 🌟 에포크 시작 시간 기록
         epoch_start_time = time.time()
 
         # ---------------- Train ----------------
@@ -249,7 +237,6 @@ def main():
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
 
-        # 🌟 에포크 종료 시간 기록 및 걸린 시간 계산
         epoch_end_time = time.time()
         time_elapsed = epoch_end_time - epoch_start_time
         mins = int(time_elapsed // 60)
@@ -268,9 +255,9 @@ def main():
 
     torch.save(model.state_dict(), "./best_cub_model.pth")
 
-    # ==========================================================================
+
     # Learning Curve
-    # ==========================================================================
+
     plt.figure(figsize=(12, 5))
 
     plt.subplot(1, 2, 1)
@@ -291,12 +278,14 @@ def main():
     plt.savefig("bird2-cub_aug_EffNetV2_learning_curve.png")
     plt.close()
 
-    # ==========================================================================
-    # Final Test
-    # ==========================================================================
+    # Final Test 
+
     model.eval()
     test_correct, test_total = 0, 0
     all_preds, all_labels = [], []
+
+    correct_cases = []
+    failure_cases = []
 
     with torch.no_grad():
         for images, labels in test_loader:
@@ -311,6 +300,14 @@ def main():
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
+            for i in range(images.size(0)):
+                if predicted[i] == labels[i]:
+                    if len(correct_cases) < 5:
+                        correct_cases.append((images[i].cpu(), labels[i].item(), predicted[i].item()))
+                else:
+                    if len(failure_cases) < 5:
+                        failure_cases.append((images[i].cpu(), labels[i].item(), predicted[i].item()))
+
     test_acc = test_correct / test_total
 
     print("=" * 50)
@@ -319,9 +316,34 @@ def main():
     torch.save(model.state_dict(), "./bird2-bird_aug_EffNetV2.pth")
     print("bird2-Model saved as bird_aug_EffNetV2.pth")
 
-    # ==========================================================================
+    def unnormalize_and_plot(cases, filename, title_prefix):
+        fig, axes = plt.subplots(1, len(cases), figsize=(15, 3.5))
+
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+
+        for idx, (img_tensor, true_label, pred_label) in enumerate(cases):
+
+            img = img_tensor.numpy().transpose((1, 2, 0))
+            img = std * img + mean
+            img = np.clip(img, 0, 1)
+            
+            axes[idx].imshow(img)
+            axes[idx].set_title(f"True: {true_label}\nPred: {pred_label}", fontsize=10)
+            axes[idx].axis('off')
+            
+        plt.suptitle(f"{title_prefix} Cases", fontsize=16)
+        plt.tight_layout()
+        plt.savefig(filename)
+        plt.close()
+
+    if correct_cases:
+        unnormalize_and_plot(correct_cases, "bird2-cub_aug_EffNetV2_correct_cases.png", "Correct")
+    if failure_cases:
+        unnormalize_and_plot(failure_cases, "bird2-cub_aug_EffNetV2_failure_cases.png", "Failure")
+
     # Confusion Matrix
-    # ==========================================================================
+
     cm = confusion_matrix(all_labels, all_preds)
 
     plt.figure(figsize=(14, 12))
@@ -332,103 +354,14 @@ def main():
     plt.savefig("bird2-cub_aug_EffNetV2_confusion_matrix.png")
     plt.close()
 
-    # ==========================================================================
     # Classification Report
-    # ==========================================================================
+
     report = classification_report(all_labels, all_preds, digits=4)
 
     with open("bird2-cub_aug_EffNetV2_report.txt", "w") as f:
         f.write(report)
 
-
-
-    # ==========================================================================
-    # Top-5 Correct / Failure Case Visualization and Class-wise Analysis
-    # ==========================================================================
-    # This section was added for the final report. It saves qualitative examples
-    # and class-wise confusion summaries so the report can discuss not only the
-    # final accuracy number, but also what kinds of images the model succeeds or
-    # fails on.
-
-    # Re-run final test once more while keeping the image tensors for visualization.
-    case_images, case_true, case_pred = [], [], []
-    model.eval()
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images_gpu, labels_gpu = images.to(device), labels.to(device)
-            outputs = model(images_gpu)
-            _, predicted = torch.max(outputs, 1)
-            for i in range(images.size(0)):
-                case_images.append(images[i].cpu())
-                case_true.append(int(labels[i].item()))
-                case_pred.append(int(predicted[i].cpu().item()))
-
-    def unnormalize_image(tensor_img):
-        """Convert normalized tensor image back to displayable numpy image."""
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-        img = tensor_img * std + mean
-        img = torch.clamp(img, 0, 1)
-        return img.permute(1, 2, 0).numpy()
-
-    def save_case_grid(indices, title, filename):
-        plt.figure(figsize=(15, 3.5))
-        for plot_idx, data_idx in enumerate(indices[:5]):
-            plt.subplot(1, 5, plot_idx + 1)
-            plt.imshow(unnormalize_image(case_images[data_idx]))
-            plt.title(f"True: {case_true[data_idx]}\nPred: {case_pred[data_idx]}", fontsize=10)
-            plt.axis("off")
-        plt.suptitle(title, fontsize=16)
-        plt.tight_layout()
-        plt.savefig(filename, dpi=200)
-        plt.close()
-
-    correct_indices = [i for i, (t, p) in enumerate(zip(case_true, case_pred)) if t == p]
-    failure_indices = [i for i, (t, p) in enumerate(zip(case_true, case_pred)) if t != p]
-    save_case_grid(correct_indices, "Correct Cases", "correct_cases.png")
-    save_case_grid(failure_indices, "Failure Cases", "failure_cases.png")
-
-    # Class-wise recall table: this helps identify the best and weakest classes.
-    class_correct = np.diag(cm)
-    class_total = cm.sum(axis=1)
-    class_recall = np.divide(
-        class_correct,
-        class_total,
-        out=np.zeros_like(class_correct, dtype=float),
-        where=class_total != 0
-    )
-
-    sorted_recall_idx = np.argsort(class_recall)
-    with open("top5_best_recall.csv", "w") as f:
-        f.write("class_id,correct,total,recall\n")
-        for class_id in sorted_recall_idx[-5:][::-1]:
-            f.write(f"{class_id},{class_correct[class_id]},{class_total[class_id]},{class_recall[class_id]:.4f}\n")
-
-    with open("top5_worst_recall.csv", "w") as f:
-        f.write("class_id,correct,total,recall\n")
-        for class_id in sorted_recall_idx[:5]:
-            f.write(f"{class_id},{class_correct[class_id]},{class_total[class_id]},{class_recall[class_id]:.4f}\n")
-
-    # Top confusion pairs: off-diagonal cells with the largest counts.
-    cm_offdiag = cm.copy()
-    np.fill_diagonal(cm_offdiag, 0)
-    flat_indices = np.argsort(cm_offdiag.ravel())[::-1]
-    with open("top10_confusion_pairs.csv", "w") as f:
-        f.write("true_class,pred_class,count\n")
-        written = 0
-        for flat_idx in flat_indices:
-            true_class, pred_class = np.unravel_index(flat_idx, cm_offdiag.shape)
-            count = cm_offdiag[true_class, pred_class]
-            if count <= 0:
-                break
-            f.write(f"{true_class},{pred_class},{count}\n")
-            written += 1
-            if written == 10:
-                break
-
-    print("Saved correct_cases.png, failure_cases.png, top5_best_recall.csv, top5_worst_recall.csv, and top10_confusion_pairs.csv")
-
-    print("All files saved successfully.")
+    print("All files saved successfully. (Including Correct/Failure images)")
 
 if __name__ == "__main__":
     main()
